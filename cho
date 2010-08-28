@@ -1,0 +1,454 @@
+#!/usr/bin/env python 
+# -*- coding: utf-8 -*- 
+#
+# Author: mfumi <m.fumi760@gmail.com>
+# Version: 1.0.0
+# License: NEW BSD LICENSE
+#   Copyright (c) 2010, mfumi
+#   All rights reserved.
+# 
+#   Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+# 
+#     * Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the
+#       documentation and/or other materials provided with the distribution.
+#     * Neither the name of the mfumi nor the names of its contributors may be used to endorse or promote products derived from this software without
+#       specific prior written permission.
+# 
+#   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+#   TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+#   CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+#   PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+#   LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+#   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# 
+
+
+
+import anydbm
+import codecs
+import datetime
+import locale
+import getopt
+import os
+import re
+import sys
+import unicodedata
+
+
+# global variables
+global d         # for debug
+d = False
+
+global data_dir  # データが保存されるベースディレクトリ
+if os.environ.has_key('CHO_HOME_DIR'):
+  base_dir = os.environ['CHO_HOME_DIR']
+elif sys.platform == 'win32':
+  base_dir = os.path.expanduser("~/cho")
+else:
+  base_dir = os.path.expanduser("~/.cho")
+if base_dir[-1] == os.path.normcase('/'):   #末尾のパス区切りを除去
+  base_dir = base_dir[:-1]
+
+global enc       # 入出力用エンコーディング
+enc = locale.getpreferredencoding()
+sys.stdout = codecs.lookup(enc)[-1](sys.stdout)
+
+global today     # 今日の日付
+today = datetime.date.today()
+
+global version   # バージョン
+version = "1.0.0"
+
+
+# getdate(args,cmd):
+#   args[0]が日付だった場合日付を取り出す
+#   例: (cmdにより解釈が異なる)
+#   2010/8/26 -> 2010,8,26
+#   2010      -> 2010,None,None
+#   7/21      -> None,7,21
+#   12        -> None,None,12
+#   12/       -> None,12,None
+#   14/2      -> -1,-1,-1
+#   /         -> Noen,(今月),None
+#   args[0]が日付の場合、args[0]は削除する。
+#   日付が無効な場合には-1を返す
+def getdate(args,cmd):
+  year = month = day = None
+  pat1 = re.compile(r"[^\d/]")
+  pat2 = re.compile(r"(\d+)/?")
+  if len(args):
+    arg = args[0]
+  else:
+    arg = ""     # 引数が何もなかった場合 ( for -s or -d )
+  if arg == '/' : 
+    month = today.month
+    del(args[0])
+  m = map(int,pat2.findall(arg))
+  if not pat1.findall(arg) and m:
+    m_len = len(m)
+    if m_len > 3:
+      #invalid date
+      year = month = day = -1
+      print "invalid date"
+    else:
+      if m_len == 1:
+        if cmd == "u" or cmd == "d":
+          day = m[0]
+        elif m[0] > 31:  #cmd == "s"
+          year = m[0]
+        elif arg[-1] == '/':
+          month = m[0]
+        else:
+          day = m[0]
+      elif m_len == 2:
+        if cmd == "u" or cmd == "d":
+          month = m[0]
+          day = m[1]
+        elif m[0] > 13:  #cmd == "s"
+          year = m[0]
+          month = m[1]
+        else:
+          month = m[0]
+          day = m[1]
+      elif m_len == 3:
+        year = m[0]
+        month = m[1]
+        day = m[2]
+      
+      y,m,d = formatdate(year,month,day)
+      if not checkdate(y,m,d):
+        print "invalid date"
+        year = month = day = -1
+
+      # delete arg
+      del(args[0])
+
+  return year,month,day
+
+# 日付が有効かどうか確認
+def checkdate(year,month,day):
+  try:
+    date = datetime.date(year,month,day)
+    if date > today:
+      raise ValueError
+  except ValueError:
+    # invalid date
+    debug("checkdate:ValueError")
+    return False
+  return True
+
+
+# あいまいに指定した日付を整形する
+def formatdate(year,month,day):
+  y = year and year or today.year
+  m = month and month or today.month
+  d = day and day or today.day
+  return y,m,d
+
+
+# update(year,month,day,name,price):
+#   項目を追加  
+#   name は unicode
+def update(year,month,day,name,price):
+  debug("function: update")
+  y,m,d = formatdate(year,month,day)
+  # 保存先フォルダが存在しなければ作成
+  data_dir = "%s/%d/%d" % (base_dir,y,m)
+  debug('data_dir: ' + data_dir)
+  if not os.path.isdir(data_dir):
+    os.makedirs(data_dir,0700)
+  f = os.path.normpath("%s/%d" % (data_dir,d))
+  debug('db_name: ' + f ) 
+  db = anydbm.open(f,'c',0600)
+  # 保存時のエンコーディングはutf-8
+  name = name.decode(enc).encode('utf-8')
+  db[name] = price
+  db.close()
+  print "updated."
+  debug("function end")
+
+
+# delete(date)
+#   引数として与えた日付の項目一覧を表示し、
+#   指定したものを削除する
+def delete(year,month,day):
+  debug("function:debug")
+  y,m,d = formatdate(year,month,day)
+  f = os.path.normpath("%s/%d/%d/%d" % (base_dir,y,m,d))
+  db = anydbm.open(f,'c')
+  keys = db.keys()
+  if keys == []:
+    print "no entry for %d/%d/%d" % (y,m,d)
+    db.close()
+    os.remove(f)
+    return
+
+  i = 0
+  keys.sort()
+  l = max_len(keys)
+  for key in keys:
+    i+=1
+    k = key.decode('utf-8')
+    print u"%d  %s%s:%7s" % (i,k,' '*(l - width_kana(k)+2),formatprice(db[key]))
+  
+  try:
+    numbers = raw_input("enter numbner to delete> ").split(',')
+    numbers = map(int,numbers)
+  except:
+    return
+  debug("numbers:" + str(numbers))
+
+  for i in numbers:
+    try:
+      if i > 0 :
+        del(db[keys[i-1]])
+        print u"deleted: %s" % keys[i-1].decode('utf-8')
+    except:
+      pass
+
+  if db.keys() == []:
+    os.remove(f)
+    d = os.path.normpath("%s/%d/%d" % (base_dir,y,m))
+    if os.listdir(d) == []:
+      os.rmdir(d)
+  db.close()
+
+  debug("funciton end")
+
+# show(date,verbose)
+#   日付に応じた統計を表示する。
+def show(year,month,day,verbose):
+  debug("function:show")
+  y,m,d = formatdate(year,month,day)
+  if year and not month and not day:
+    n = u"%s/%d" % (base_dir,y)
+    if not os.path.isdir(n) :
+      n = None
+  elif (year and month and not day) or (not year and month and not day):
+    n = u"%s/%d/%d" % (base_dir,y,m)
+    if not os.path.isdir(n) :
+      n = None
+  else:
+    n = u"%s/%d/%d" % (base_dir,y,m)
+    if not os.path.isdir(n):
+      n = None
+    else:
+      n = u"%s/%d/%d/%d" % (base_dir,y,m,d)
+
+  if n:
+    n = os.path.normpath(n)
+    sum_db(n,0,verbose)
+  else:
+    date = ""
+    if year and not month  :
+      date = y
+    elif day:
+      date = "%d/%d/%d" % (y,m,d)
+    else :
+      date = "%d/%d" % (y,m)
+    print "no entry for %s" % date
+
+  debug("function end")
+
+# sum_db(n,ind,varbose):
+# データベースの項目の合計を再帰的に表示
+def sum_db(n,ind,verbose):
+  s = 0
+  pat = re.compile(r"((\d+[/\\]?)+)$")
+  date = pat.findall(n)[0][0].replace('\\','/')
+  if verbose >= 0:
+    print "%s%s" % (' '*ind,date)
+  if os.path.isdir(n):
+    verbose -= 1
+    ind += 3
+    lists = os.listdir(n)
+    lists = [os.path.splitext(l)[0] for l in lists]
+    lists = map(int,lists)
+    lists.sort()
+    for i in lists:
+      f = os.path.normcase("%s/%d" % (n,i))
+      s += sum_db(f,ind,verbose)
+    ind -= 3
+    verbose += 1
+  else:
+#   dbmの場合は勝手に拡張子.dbとかつけるから
+#   単純にos.path.isfile()じゃだめ…
+#   (しかも開くとき拡張子つけるとだめ)
+#   なので一回開いてみてキーが無ければ削除
+    n = os.path.normpath(n)
+    db = anydbm.open(n,'c')
+    keys = db.keys()
+    if keys != []:
+      keys.sort()
+      l = max_len(keys)
+      for key in keys:
+        s += int(db[key])
+        if verbose > 0:
+          k = key.decode('utf-8')
+          print u"%s%s%s:%7s" % (' '*(ind+3),k,' '*(l-width_kana(k)+2),u'\u00A5'+formatprice(db[key]))
+    else:
+      os.remove(n)
+      print "no entry for %s" % (date)
+    db.close()
+  if verbose >= 0:
+    print u"%sTotal:%7s" % (' '*ind,u'\u00A5'+formatprice(s))
+  return s
+
+# max_len(keys):
+# 最も長いkeyの長さを求める
+def max_len(keys):
+  l = 0
+  for key in keys:
+    k = key.decode('utf-8')
+    _l = width_kana(k)
+    if l < _l:
+      l = _l
+  return l
+
+
+# 全角文字を半角文字2文字として数える
+# [http://d.hatena.ne.jp/hush_puppy/20090227/1235740342]
+# 幅(半角基準)
+def width_kana(str):
+  all = len(str)      # 全文字数
+  zenkaku = count_zen(str)        # 全角文字数
+  hankaku = all - zenkaku     # 半角文字数
+  return zenkaku * 2 + hankaku
+
+# 全角文字数
+def  count_zen(str):
+  n = 0
+  for c in str:
+    wide_chars = u"WFA"
+    eaw = unicodedata.east_asian_width(c)
+    if wide_chars.find(eaw) > -1:
+      n += 1
+  return n
+
+# formatprice(price):
+# お金を整形
+# 2500    -> 2,500
+# 1000000 -> 1,000,000
+def formatprice(price):
+  if type(price) == type(0):
+    price = str(price)
+  price = price[::-1]
+  p = ""
+  i = 1
+  for c in price:
+    p = c + p
+    if i % 3 == 0:
+      p = ',' + p
+    i+=1
+  if p[0] == ',':
+    p = p[1:]
+  return p
+
+
+def debug(msg):
+  if d:
+    print msg
+
+if __name__ == "__main__" :
+  def usage():
+    print "usage: cho -u  [date] name price  # update"
+    print "       cho -d  [date]             # delete"
+    print "       cho -s  [date]             # show  "
+    print "       cho -h                     # help  "
+    sys.exit(2)
+
+  try:
+    opts,args = getopt.getopt(sys.argv[1:],"hudsvV",["debug","help","version"])
+  except getopt.error:
+    usage()
+  if not opts:
+    usage()
+
+  # オプションの確認
+  cmd = None
+  v = 0
+  debug("option:")
+  for (o,a) in opts:
+    if o == "-u": 
+      if cmd : usage()
+      cmd = "u"
+      debug("  update")
+    elif o == "-d":
+      if cmd : usage()
+      cmd = "d"
+      debug("  delete")
+    elif o == "-s":
+      if cmd : usage()
+      cmd = "s"
+      debug("  show")
+    elif o == "-v":
+      v += 1
+      debug("  verbose:%d" % v)
+    elif o == "-V":
+      v += 2
+      debug("  verbose:%d" % v)
+    elif o == "--debug":
+      d = True
+    elif o == "--version":
+      print "version: %s" % version
+      sys.exit(0)
+    elif o == "-h" or o == "--help":
+      print """\
+cho  version  %s
+Simple text-based command line expenditure record
+First option must be a mode specifier:
+  -u Update  -d Delete  -s Show
+Update: cho -u [date] name price
+  Update entry.
+  Same entry name is overwritten.
+Delete: cho -d [date]
+  List entrys , then delete specified entry
+Show  : cho -s [option] [date]
+  Show statics.
+  -v    Verbose (level1)
+  -vv   Verbose (level2)
+  -vvv  Verbose (level3)
+  -V    same as -vv
+date example :
+  y,m,d is today's date
+  8         # y/m/8
+  8/1       # y/8/1
+  2010/8/1  # 2010/8/1
+  2010/8    # 2010/8/*  (Only show mode)
+  2010      # 2010/*/*  (Only show mode)
+  /         # y/m/*     (Only show mode)
+if date is not given, use today's date
+data is saved in $CHO_HOME_DIR (default: ~/.cho or ~\cho (win))\
+      """ % (version)
+      sys.exit(0)
+
+  # 日付を取得
+  (year,month,day) = getdate(args,cmd)
+  debug("(year,month,day) = " + str((year,month,day)))
+  debug("args: " + str(args))
+
+  # 指定した日付が無効
+  if year == -1:
+    usage()
+   
+
+  # 引数の確認
+  if (cmd == "u" and (len(args) != 2 or args[0].isdigit() or not args[1].isdigit()))or \
+     ((cmd == "d" or cmd == "s") and len(args)):
+    usage()
+
+  # ベースフォルダが存在しなければ作成 
+  if not os.path.isdir(base_dir):
+    os.mkdir(base_dir,0700)
+
+
+  # Entry Point
+  if cmd == "u":
+    update(year,month,day,name = args[0],price = args[1])
+  if cmd == "d":
+    delete(year,month,day)
+  if cmd == "s":
+    show(year,month,day,verbose=v)
+
+  sys.exit(0)
